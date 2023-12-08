@@ -11,6 +11,8 @@ RUN go mod download
 
 ARG TARGETOS
 ARG TARGETARCH
+ARG CORERULESET_VERSION=v4.0.0-rc1
+ARG CORERULESET_SHA256SUM=a8f0d1cac941bf2158988b92a91519f093a8bce64a260e46fa352d608c7de3e6
 
 RUN apk add --no-cache make ca-certificates \
     && update-ca-certificates
@@ -18,6 +20,11 @@ RUN apk add --no-cache make ca-certificates \
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg \
     OS=${TARGETOS} ARCH=${TARGETARCH} make
+
+RUN wget -O /tmp/crs.tgz https://github.com/coreruleset/coreruleset/archive/refs/tags/${CORERULESET_VERSION}.tar.gz \
+    && echo "$CORERULESET_SHA256SUM  /tmp/crs.tgz" | sha256sum -c \
+    && mkdir crs \
+    && tar --strip-components 1 -C crs -xf /tmp/crs.tgz
 
 # ---
 FROM alpine:3.17 AS main
@@ -45,6 +52,9 @@ COPY --from=builder /build/coraza-spoa_${TARGETARCH} /usr/bin/coraza-spoa
 COPY --from=builder /build/config.yaml.default /etc/coraza-spoa/config.yaml
 COPY --from=builder /build/docker/coraza-spoa/coraza.conf /etc/coraza-spoa/coraza.conf
 COPY --from=builder /build/docker/coraza-spoa/docker-entrypoint.sh /docker-entrypoint.sh
+COPY --from=builder /build/crs/crs-setup.conf.example /etc/coraza-spoa/crs-setup.conf
+COPY --from=builder /build/crs/rules /etc/coraza-spoa/rules/
+COPY --from=builder /build/crs/plugins /etc/coraza-spoa/plugins/
 
 EXPOSE 9000
 USER coraza-spoa
@@ -54,28 +64,3 @@ HEALTHCHECK --interval=10s --timeout=2s --retries=2 CMD "/usr/bin/socat /dev/nul
 ENTRYPOINT ["tini", "--", "/docker-entrypoint.sh"]
 
 CMD ["/usr/bin/coraza-spoa", "--config", "/etc/coraza-spoa/config.yaml"]
-
-# ---
-FROM main AS coreruleset
-
-ARG CORERULESET_VERSION=v4.0.0-rc1
-ARG CORERULESET_SHA256SUM=a8f0d1cac941bf2158988b92a91519f093a8bce64a260e46fa352d608c7de3e6
-
-# Switch to root for crs installation
-USER root
-
-# Download the core rule set
-RUN set -xe \
-    && wget -O /tmp/crs.tgz https://github.com/coreruleset/coreruleset/archive/refs/tags/${CORERULESET_VERSION}.tar.gz
-
-RUN echo "$CORERULESET_SHA256SUM  /tmp/crs.tgz" | sha256sum -c
-
-RUN set -xe \
-    && mkdir crs \
-    && tar --strip-components 1 -C crs -xf /tmp/crs.tgz \
-    && mv crs/crs-setup.conf.example /etc/coraza-spoa/crs-setup.conf \
-    && mv crs/rules /etc/coraza-spoa \
-    && if [[ -d crs/plugins ]] ; then mv crs/plugins /etc/coraza-spoa ; fi \
-    && rm -rf crs /tmp/crs.tgz
-
-USER coraza-spoa
